@@ -79,11 +79,6 @@
                     this.$nextTick(() => this.scrollToBottom());
 
                     try {
-                        // 模擬/真實發送 (根據 PRD: 傳送至 n8n)
-                        if (this.config.questionWebhook.includes('YOUR_N8N_INSTANCE')) {
-                            throw new Error("Demo Mode");
-                        }
-
                         const response = await fetch(this.config.questionWebhook, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
@@ -105,21 +100,12 @@
                         });
 
                     } catch (error) {
-                        console.warn('使用演示回覆模式');
-                        setTimeout(() => {
-                            this.messages.push({
-                                text: "已收到您的問題！(演示模式：資料已傳送至後端)",
-                                isUser: false,
-                                requiresFeedback: false
-                            });
-                            this.isLoading = false;
-                            this.$nextTick(() => this.scrollToBottom());
-                        }, 800);
-                        return; // Demo 模式下直接 return
+                        console.error('Error:', error);
+                        this.messages.push({ text: "傳送失敗，請檢查網路或系統設定。", isUser: false });
+                    } finally {
+                        this.isLoading = false;
+                        this.$nextTick(() => this.scrollToBottom());
                     }
-
-                    this.isLoading = false;
-                    this.$nextTick(() => this.scrollToBottom());
                 },
 
                 async submitFeedback(questionId, isSolved, msgIndex) {
@@ -129,13 +115,11 @@
                     this.$nextTick(() => this.scrollToBottom());
                     
                     try {
-                        if (!this.config.feedbackWebhook.includes('YOUR_N8N_INSTANCE')) {
-                            await fetch(this.config.feedbackWebhook, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ question_id: questionId, is_solved: isSolved })
-                            });
-                        }
+                        await fetch(this.config.feedbackWebhook, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ question_id: questionId, is_solved: isSolved })
+                        });
                     } catch (e) { console.error(e); }
                 }
             }
@@ -147,7 +131,6 @@
                 questions: [],
                 isLoading: false,
                 timer: null,
-                demoLoaded: false,
                 // ★ 請替換為您的 N8N Webhook URL ★
                 speakerWebhook: 'https://YOUR_N8N_INSTANCE/webhook/speaker/list',
                 feedbackWebhook: 'https://YOUR_N8N_INSTANCE/webhook/chat/feedback',
@@ -162,22 +145,14 @@
                 async fetchQuestions(isBackground = false) {
                     if (!isBackground) this.isLoading = true;
                     try {
-                        if (this.speakerWebhook.includes('YOUR_N8N_INSTANCE')) throw new Error("Demo Mode");
-                        
                         const res = await fetch(this.speakerWebhook);
                         if (!res.ok) throw new Error('Network error');
                         const data = await res.json();
                         this.questions = Array.isArray(data) ? data : [];
 
                     } catch (e) {
-                        if (!isBackground && !this.demoLoaded && this.questions.length === 0) {
-                            console.warn("載入演示資料");
-                            this.questions = [
-                                { id: 'd1', question_text: '演示：如何使用 n8n 串接？', timestamp: new Date().toISOString(), category: 'Technical', suggestions: ['參考官方文件', '使用 Webhook'] },
-                                { id: 'd2', question_text: '演示：這是即時的嗎？', timestamp: new Date().toISOString(), category: 'General', suggestions: ['是的', '有10秒延遲'] }
-                            ];
-                            this.demoLoaded = true;
-                        }
+                        console.error("Fetch error", e);
+                        // 移除演示模式，不再自動填入假資料
                     } finally {
                         this.isLoading = false;
                     }
@@ -187,14 +162,14 @@
                     if (!confirm("封存此問題？")) return;
                     this.questions = this.questions.filter(q => q.id !== id);
                     try {
-                        if (!this.feedbackWebhook.includes('YOUR_N8N_INSTANCE')) {
-                            await fetch(this.feedbackWebhook, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ question_id: id, is_solved: true })
-                            });
-                        }
-                    } catch (e) {}
+                        await fetch(this.feedbackWebhook, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ question_id: id, is_solved: true })
+                        });
+                    } catch (e) {
+                        console.error("Feedback error", e);
+                    }
                 },
 
                 formatTime(iso) {
