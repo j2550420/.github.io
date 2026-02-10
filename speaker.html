@@ -13,6 +13,8 @@
             return {
                 questions: [],
                 isLoading: false,
+                demoLoaded: false, // ★★★ 新增：防止演示資料重複載入的標記 ★★★
+                
                 // ★★★ 請替換為您的 N8N Webhook URL ★★★
                 speakerWebhook: 'https://YOUR_N8N_INSTANCE/webhook/speaker/list',
                 feedbackWebhook: 'https://YOUR_N8N_INSTANCE/webhook/chat/feedback',
@@ -36,7 +38,7 @@
                     if (!isBackground) this.isLoading = true;
                     
                     try {
-                        // 檢測是否為預設網址，如果是，則直接拋出錯誤進入 Demo 模式
+                        // 檢測是否為預設網址
                         if (this.speakerWebhook.includes('YOUR_N8N_INSTANCE')) {
                              throw new Error("Default URL detected");
                         }
@@ -48,12 +50,11 @@
                         this.questions = Array.isArray(data) ? data : [];
 
                     } catch (e) {
-                        // 僅在非背景刷新時顯示錯誤 log，避免 console 太亂
                         if (!isBackground) console.warn("無法連線至 N8N，切換至演示模式 (Demo Mode)");
                         
-                        // ★★★ 關鍵修正：如果抓取失敗，且目前沒有資料，則載入範例資料供預覽 ★★★
-                        // 這樣即使沒有後端，您也能看到畫面效果
-                        if (this.questions.length === 0) {
+                        // ★★★ 關鍵修正：只在「尚未載入過演示資料」且「目前列表為空」時才載入 ★★★
+                        // 這樣當您手動刪除問題後，自動刷新就不會再把它們加回來了
+                        if (this.questions.length === 0 && !this.demoLoaded) {
                             this.questions = [
                                 {
                                     id: 'demo-1',
@@ -77,6 +78,7 @@
                                     suggestions: ['資料存在 Google Sheets', '前端有快取', '連線後會自動同步']
                                 }
                             ];
+                            this.demoLoaded = true; // 設定為已載入過
                         }
                     } finally {
                         this.isLoading = false;
@@ -90,7 +92,6 @@
                     // Optimistic update (樂觀更新 UI)
                     this.questions = this.questions.filter(q => q.id !== id);
 
-                    // 嘗試發送請求 (如果是 Demo 模式一定會失敗，我們接住錯誤即可)
                     try {
                          if (this.feedbackWebhook.includes('YOUR_N8N_INSTANCE')) {
                              throw new Error("Demo Mode");
@@ -105,9 +106,6 @@
                         });
                     } catch (e) {
                         console.log("Demo Mode: 已在前端移除問題 (後端未連線)");
-                        // 在 Demo 模式下，我們就不跳出錯誤視窗干擾體驗了
-                        // alert("更新狀態失敗，請稍後再試");
-                        // this.fetchQuestions(); 
                     }
                 },
 
@@ -125,7 +123,6 @@
                         'General': 'bg-slate-100 text-slate-700',
                         'Other': 'bg-gray-100 text-gray-600'
                     };
-                    // Simple fuzzy content match or default
                     if (!category) return map['Other'];
                     for (const key in map) {
                         if (category.includes(key)) return map[key];
@@ -142,16 +139,6 @@
     <style>
         [x-cloak] {
             display: none !important;
-        }
-
-        .fade-enter-active,
-        .fade-leave-active {
-            transition: opacity 0.5s;
-        }
-
-        .fade-enter,
-        .fade-leave-to {
-            opacity: 0;
         }
     </style>
 </head>
