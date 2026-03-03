@@ -1,337 +1,87 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
+
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>演講即時 Q&A 系統</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
-    
-    <style>
-        [x-cloak] { display: none !important; }
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
-        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-        .animate-fade-in-up { animation: fadeInUp 0.5s ease-out; }
-        @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-    </style>
-
-    <script>
-        // --- 核心邏輯 ---
-        function app() {
-            return {
-                view: 'audience', // 當前頁面: 'audience' | 'speaker'
-                
-                // 切換到講者頁面 (需密碼)
-                goToSpeaker() {
-                    const pwd = prompt("請輸入講者控台密碼:");
-                    if (pwd === 'a12345678') {
-                        this.view = 'speaker';
-                        // 觸發講者看版的初始化
-                        this.$dispatch('init-dashboard');
-                    } else if (pwd !== null) {
-                        alert("密碼錯誤");
-                    }
-                },
-
-                // 回到觀眾首頁
-                backToAudience() {
-                    this.view = 'audience';
-                }
-            }
-        }
-
-        // --- 觀眾端邏輯 (Webhook 模式) ---
-        function chatWidget() {
-            return {
-                isOpen: true,
-                isLoading: false,
-                userInput: '',
-                messages: [],
-                // ★ 請替換為您的 N8N Webhook URL ★
-                config: {
-                    questionWebhook: 'https://YOUR_N8N_INSTANCE/webhook/chat/ask',
-                    feedbackWebhook: 'https://YOUR_N8N_INSTANCE/webhook/chat/feedback'
-                },
-                userId: localStorage.getItem('chat_user_id') || 'user_' + Math.random().toString(36).substr(2, 9),
-
-                init() {
-                    if (!localStorage.getItem('chat_user_id')) {
-                        localStorage.setItem('chat_user_id', this.userId);
-                    }
-                    this.$nextTick(() => this.scrollToBottom());
-                },
-
-                scrollToBottom() {
-                    const container = document.getElementById('chat-messages');
-                    if (container) container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
-                },
-
-                async sendMessage() {
-                    if (!this.userInput.trim()) return;
-                    
-                    const text = this.userInput;
-                    this.userInput = '';
-                    this.messages.push({ text: text, isUser: true });
-                    this.isLoading = true;
-                    this.$nextTick(() => this.scrollToBottom());
-
-                    try {
-                        const response = await fetch(this.config.questionWebhook, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                question: text,
-                                user_id: this.userId,
-                                timestamp: new Date().toISOString()
-                            })
-                        });
-                        
-                        if (!response.ok) throw new Error('API Error');
-                        const data = await response.json();
-                        
-                        this.messages.push({
-                            text: data.answer || "收到，已轉交講者。",
-                            isUser: false,
-                            requiresFeedback: data.requires_feedback === true,
-                            questionId: data.question_id 
-                        });
-
-                    } catch (error) {
-                        console.error('Error:', error);
-                        this.messages.push({ text: "傳送失敗，請檢查網路或系統設定。", isUser: false });
-                    } finally {
-                        this.isLoading = false;
-                        this.$nextTick(() => this.scrollToBottom());
-                    }
-                },
-
-                async submitFeedback(questionId, isSolved, msgIndex) {
-                    if (this.messages[msgIndex].feedbackGiven) return;
-                    this.messages[msgIndex].feedbackGiven = true;
-                    this.messages.push({ text: isSolved ? "感謝回饋！" : "我們會再跟進。", isUser: false });
-                    this.$nextTick(() => this.scrollToBottom());
-                    
-                    try {
-                        await fetch(this.config.feedbackWebhook, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ question_id: questionId, is_solved: isSolved })
-                        });
-                    } catch (e) { console.error(e); }
-                }
-            }
-        }
-
-        // --- 講者端邏輯 (Polling 模式) ---
-        function dashboard() {
-            return {
-                questions: [],
-                isLoading: false,
-                timer: null,
-                // ★ 請替換為您的 N8N Webhook URL ★
-                speakerWebhook: 'https://YOUR_N8N_INSTANCE/webhook/speaker/list',
-                feedbackWebhook: 'https://YOUR_N8N_INSTANCE/webhook/chat/feedback',
-
-                initDashboard() {
-                    // 當切換到講者頁面時被觸發
-                    this.fetchQuestions();
-                    if (this.timer) clearInterval(this.timer);
-                    this.timer = setInterval(() => this.fetchQuestions(true), 10000);
-                },
-
-                async fetchQuestions(isBackground = false) {
-                    if (!isBackground) this.isLoading = true;
-                    try {
-                        const res = await fetch(this.speakerWebhook);
-                        if (!res.ok) throw new Error('Network error');
-                        const data = await res.json();
-                        this.questions = Array.isArray(data) ? data : [];
-
-                    } catch (e) {
-                        console.error("Fetch error", e);
-                        // 移除演示模式，不再自動填入假資料
-                    } finally {
-                        this.isLoading = false;
-                    }
-                },
-
-                async markAsSolved(id) {
-                    if (!confirm("封存此問題？")) return;
-                    this.questions = this.questions.filter(q => q.id !== id);
-                    try {
-                        await fetch(this.feedbackWebhook, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ question_id: id, is_solved: true })
-                        });
-                    } catch (e) {
-                        console.error("Feedback error", e);
-                    }
-                },
-
-                formatTime(iso) {
-                    if (!iso) return '';
-                    return new Date(iso).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
-                },
-
-                getCategoryColor(cat) {
-                    const map = { 'Technical': 'bg-blue-100 text-blue-800', 'Pricing': 'bg-yellow-100 text-yellow-800', 'General': 'bg-gray-100 text-gray-800' };
-                    return map[cat] || map['General'];
-                }
-            }
-        }
-    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>簡報問答互動 | Audience</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
 </head>
-<body class="bg-gray-100 font-sans text-gray-700 overflow-hidden" x-data="app()">
 
-    <!-- ========================================== -->
-    <!--  1. 觀眾端頁面 (Audience View)            -->
-    <!-- ========================================== -->
-    <div x-show="view === 'audience'" 
-         x-transition:enter="transition ease-out duration-300"
-         x-transition:enter-start="opacity-0 scale-95"
-         x-transition:enter-end="opacity-100 scale-100"
-         class="h-screen w-full relative bg-gradient-to-br from-indigo-50 via-white to-purple-50">
+<body>
 
-        <!-- 聊天室 Widget -->
-        <div x-data="chatWidget()" x-cloak class="absolute inset-0 flex flex-col items-center justify-center md:items-end md:justify-end md:p-6">
-            
-            <!-- 聊天視窗 (手機版全螢幕 / 電腦版固定大小) -->
-            <div x-show="isOpen" 
-                 class="w-full h-full md:w-[400px] md:h-[600px] bg-white md:rounded-2xl shadow-2xl flex flex-col border border-gray-200 overflow-hidden relative">
-                 
-                 <!-- Header -->
-                 <div class="bg-gradient-to-r from-violet-600 to-indigo-600 p-4 flex justify-between items-center text-white shrink-0">
-                    <div class="flex items-center gap-3">
-                        <div class="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-sm">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                        </div>
-                        <div>
-                            <h3 class="font-bold text-base">演講 Q&A 助理</h3>
-                            <p class="text-[10px] opacity-80">Connected to N8N</p>
-                        </div>
-                    </div>
-                 </div>
+    <!-- Hero Section (Landing) -->
+    <div class="hero-section">
+        <h1>問答互動系統</h1>
+        <p>歡迎參與本次簡報。請點擊右下角的聊天圖示提出您的問題，AI 助理將會協助回答，或將問題轉交給講者。</p>
+    </div>
 
-                 <!-- 訊息區 -->
-                 <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 scrollbar-hide">
-                    <!-- 歡迎訊息 -->
-                    <div class="flex justify-start animate-fade-in-up">
-                        <div class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center mr-2 shrink-0 border border-indigo-200 text-indigo-600">AI</div>
-                        <div class="bg-white border border-gray-100 text-gray-800 rounded-2xl rounded-tl-none py-3 px-4 max-w-[85%] shadow-sm text-sm">
-                            <p>歡迎參加本次演講 🎉</p>
-                            <p class="mt-2">有任何問題，請直接在此輸入。</p>
-                        </div>
-                    </div>
-                    
-                    <template x-for="(msg, index) in messages" :key="index">
-                        <div class="flex w-full animate-fade-in-up" :class="msg.isUser ? 'justify-end' : 'justify-start'">
-                            <div x-show="!msg.isUser" class="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center mr-2 shrink-0 border border-indigo-200 text-indigo-600">AI</div>
-                            <div :class="msg.isUser ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white border border-gray-100 text-gray-800 rounded-tl-none'"
-                                 class="rounded-2xl py-3 px-4 shadow-sm text-sm break-words max-w-[85%]">
-                                <p x-text="msg.text"></p>
-                            </div>
-                        </div>
-                    </template>
+    <!-- Public Question Board -->
+    <div class="dashboard-container" style="padding-top: 0;">
+        <h2 class="section-title">現場提問牆</h2>
+        <div class="questions-grid" id="publicQuestionsGrid">
+            <!-- Questions injected by JS -->
+            <div style="grid-column: 1/-1; text-align: center; color: var(--text-secondary);">
+                載入中...
+            </div>
+        </div>
+    </div>
 
-                    <div x-show="isLoading" class="flex justify-start animate-pulse">
-                        <div class="w-8 h-8 bg-gray-200 rounded-full mr-2"></div>
-                        <div class="bg-white rounded-2xl rounded-tl-none py-3 px-4 shadow-sm flex gap-1">
-                            <span class="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce"></span>
-                            <span class="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce delay-75"></span>
-                            <span class="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce delay-150"></span>
-                        </div>
-                    </div>
-                 </div>
+    <!-- Speaker Login Button -->
+    <button id="speakerLoginBtn" class="speaker-login-btn">
+        講者登入
+    </button>
 
-                 <!-- 輸入區 -->
-                 <div class="p-3 bg-white border-t border-gray-100 shrink-0">
-                    <form @submit.prevent="sendMessage" class="flex gap-2 relative">
-                        <input type="text" x-model="userInput" placeholder="輸入問題..." 
-                               class="flex-1 bg-gray-50 border border-gray-200 rounded-full pl-5 pr-12 py-3 text-sm focus:outline-none focus:border-indigo-500 transition"
-                               :disabled="isLoading">
-                        <button type="submit" :disabled="!userInput.trim() || isLoading"
-                                class="absolute right-1.5 top-1.5 p-2 bg-indigo-600 text-white rounded-full hover:bg-indigo-700 transition disabled:opacity-50">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
-                        </button>
-                    </form>
-                 </div>
+    <!-- Chat Widget -->
+    <div class="chat-widget-container">
+        <!-- Chat Window -->
+        <div class="chat-window" id="chatWindow">
+            <div class="chat-header">
+                <h3>提問助理</h3>
+                <button class="close-btn" id="closeChatBtn">&times;</button>
+            </div>
+
+            <div class="chat-messages" id="chatMessages">
+                <div class="message system">
+                    嗨！我是您的簡報助理。有什麼問題想問講者嗎？我可以先試著為您解答喔！😊
+                </div>
+            </div>
+
+            <div class="chat-input-area">
+                <textarea id="questionInput" placeholder="輸入您的問題（上限 50 字）..." rows="1" maxlength="50"></textarea>
+                <button class="send-btn" id="sendMessageBtn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
             </div>
         </div>
 
-        <!-- ★★★ 講者入口按鈕 (右下角，位於聊天視窗附近) ★★★ -->
-        <button @click="goToSpeaker()" 
-                class="fixed bottom-24 right-4 md:right-8 z-40 bg-gray-800 text-white p-3 rounded-full shadow-lg hover:bg-gray-700 transition-all transform hover:scale-105 group"
-                title="講者登入">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-            <span class="absolute right-full mr-2 top-1/2 -translate-y-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition whitespace-nowrap">講者入口</span>
+        <!-- Toggle Button -->
+        <button class="chat-toggle-btn" id="toggleChatBtn" aria-label="Open Chat">
+            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
         </button>
-
     </div>
 
-    <!-- ========================================== -->
-    <!--  2. 講者端頁面 (Speaker Dashboard)        -->
-    <!-- ========================================== -->
-    <div x-show="view === 'speaker'" 
-         x-data="dashboard()" 
-         @init-dashboard.window="initDashboard()"
-         x-transition:enter="transition ease-out duration-300"
-         x-transition:enter-start="opacity-0 translate-y-10"
-         x-transition:enter-end="opacity-100 translate-y-0"
-         class="min-h-screen bg-gray-100 p-4 overflow-y-auto">
-
-        <div class="container mx-auto max-w-6xl">
-            <!-- Header -->
-            <header class="flex flex-col md:flex-row justify-between items-center mb-8 gap-4 bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
-                <div>
-                    <h1 class="text-3xl font-bold text-gray-800 tracking-tight">講者即時提問看板</h1>
-                    <p class="text-gray-500 mt-1 flex items-center gap-2">
-                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                        系統狀態：線上 (Polling N8N)
-                    </p>
-                </div>
-                <div class="flex items-center gap-3">
-                    <button @click="fetchQuestions()" class="bg-indigo-50 px-4 py-2 rounded-lg text-indigo-700 font-medium hover:bg-indigo-100 transition">刷新</button>
-                    <!-- 返回觀眾首頁按鈕 -->
-                    <button @click="backToAudience()" class="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition flex items-center gap-2">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
-                        返回首頁
-                    </button>
-                </div>
-            </header>
-
-            <!-- Grid -->
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-20">
-                <!-- Empty State -->
-                <div x-show="questions.length === 0 && !isLoading" class="col-span-full flex flex-col items-center justify-center py-24 text-gray-400 border-2 border-dashed border-gray-200 rounded-3xl">
-                    <p class="text-xl font-medium">目前沒有待回覆的問題</p>
-                </div>
-
-                <!-- Cards -->
-                <template x-for="q in questions" :key="q.id">
-                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-full hover:shadow-md transition">
-                        <div class="flex justify-between items-start mb-4">
-                            <span :class="getCategoryColor(q.category)" class="px-2.5 py-1 rounded-md text-xs font-bold uppercase" x-text="q.category"></span>
-                            <span class="text-xs text-gray-400 font-mono" x-text="formatTime(q.timestamp)"></span>
-                        </div>
-                        <h3 class="text-lg font-bold text-gray-800 mb-5 flex-grow" x-text="q.question_text"></h3>
-                        <div class="bg-slate-50 rounded-lg p-3 mb-5 border border-slate-100">
-                            <div class="text-xs font-bold text-slate-500 mb-2 uppercase">AI 建議</div>
-                            <div class="flex flex-wrap gap-2">
-                                <template x-for="s in (q.suggestions || [])">
-                                    <span class="bg-white text-slate-600 px-2 py-1 rounded text-xs border border-slate-200" x-text="s"></span>
-                                </template>
-                            </div>
-                        </div>
-                        <button @click="markAsSolved(q.id)" class="mt-auto w-full bg-gray-900 text-white py-2 rounded-lg hover:bg-gray-800 transition text-sm font-medium">標記已回答</button>
-                    </div>
-                </template>
-            </div>
+    <!-- Login Modal -->
+    <div id="loginModal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2>講者登入</h2>
+            <p>請輸入存取密碼以進入講者控制台</p>
+            <input type="password" id="passwordInput" placeholder="Password">
+            <button id="submitPasswordBtn">確認</button>
+            <p id="loginError" class="error-msg"></p>
         </div>
     </div>
 
+    <script src="script.js"></script>
 </body>
+
 </html>
